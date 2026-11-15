@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS
+Thumbs.db
+ehthumbs.db
+.DS_Store
+
+# GameNetCheck
+AGENTS.md
+GameNetCheck_*/
+report.html
+connections.csv
+candidates.csv
+podkop-candidates.txt
+networks.json
+name-lookups.json
+session.json
+*.log
