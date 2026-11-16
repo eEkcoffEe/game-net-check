@@ -164,6 +164,9 @@ def run(capture,source,local_ip,process='',out=None,online=False,procmon_date=No
     if not any(r['Matched'] for r in result):warnings['НЕТ СОПОСТАВЛЕННЫХ СОЕДИНЕНИЙ: отсутствие кандидатов не означает исправность']=1
     pending=sum(r['UnassignedSuspicious'] for r in result)
     if pending:warnings['Подозрительные потоки без однозначной привязки: проверьте несопоставленные и неоднозначные строки']=pending
+    from names import check_dns_failures
+    skipped_dns_checks=check_dns_failures(names.dns_failures,names.dns_unanswered,online)
+    if skipped_dns_checks:warnings['DNS-перепроверка ограничена 20 уникальными запросами']+=skipped_dns_checks
     out=pathlib.Path(out or pathlib.Path(capture).parent/('GameNetCheck_'+datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')));out.mkdir(parents=True,exist_ok=False)
     candidates=sorted({r['IP'] for r in result if r['Candidate']},key=ipaddress.ip_address)
     netinfo=[];ptr_results=[]
@@ -195,7 +198,7 @@ def run(capture,source,local_ip,process='',out=None,online=False,procmon_date=No
         if domains:rules.append('// Имя: '+'; '.join(domains))
         rules.append(ip+'/32')
     (out/'podkop-candidates.txt').write_text('\n'.join(rules)+'\n',encoding='utf-8-sig')
-    metadata={'version':'1.5' ,'mode':mode,'capture':str(capture),'csv':str(source),'local_ip':local_ip,'process':process,'capture_start_utc':datetime.datetime.fromtimestamp(start,datetime.timezone.utc).isoformat(),'capture_end_utc':datetime.datetime.fromtimestamp(end,datetime.timezone.utc).isoformat(),'procmon_date':procmon_date,'utc_offset':utc_offset,'clock_shift':clock_shift,'tolerance':tolerance,'warnings':dict(warnings)}
+    metadata={'version':'1.5' ,'mode':mode,'capture':str(capture),'csv':str(source),'local_ip':local_ip,'process':process,'capture_start_utc':datetime.datetime.fromtimestamp(start,datetime.timezone.utc).isoformat(),'capture_end_utc':datetime.datetime.fromtimestamp(end,datetime.timezone.utc).isoformat(),'procmon_date':procmon_date,'utc_offset':utc_offset,'clock_shift':clock_shift,'tolerance':tolerance,'warnings':dict(warnings),'dns_failures':names.dns_failures,'dns_unanswered':names.dns_unanswered}
     (out/'session.json').write_text(json.dumps(metadata,ensure_ascii=False,indent=2),encoding='utf-8')
     render(out,result,metadata,num,date_info,netinfo,online)
     return out,result
@@ -208,6 +211,55 @@ def render(out,rows,meta,num,date_info,netinfo,online):
     page+='<p class="tag">Wireshark + '+('Process Monitor' if meta['mode']=='procmon' else 'NetLimiter')+'</p><p>'+esc(meta['capture'])+'<br>'+esc(meta['csv'])+'</p><p>ПК: '+esc(meta['local_ip'])+' · Процесс: '+esc(meta['process'] or 'все')+' · Пакетов в записи: '+str(num)+'</p>'
     page+='<p>Интервал PCAP (UTC): '+esc(meta['capture_start_utc'])+' — '+esc(meta['capture_end_utc'])+'</p><p>'+esc(date_info)+'</p>'
     if meta['warnings']:page+='<section class="warn"><b>Проверьте ограничения</b><pre>'+esc(json.dumps(meta['warnings'],ensure_ascii=False,indent=2))+'</pre></section>'
+    dns_events=[]
+    def check_text(item,key):
+        check=item.get('checks',{}).get(key,{})
+        reachable=check.get('reachable')
+        if reachable is True:parts=['Доступен']
+        elif reachable is False:parts=['Не доступен']
+        else:parts=[check.get('status','Не запускалась')]
+        if check.get('rcode'):parts.append(check['rcode'])
+        elif reachable is True and check.get('status')!='Ответ получен':parts.append(check['status'])
+        elif reachable is False:parts.append(check.get('status','Ошибка'))
+        if check.get('elapsed_ms') is not None:parts.append('%.0f мс'%check['elapsed_ms'])
+        if check.get('error'):parts.append(check['error'])
+        if check.get('warning'):parts.append(check['warning'])
+        return ' · '.join(parts)
+    for item in meta.get('dns_failures',[]):
+        status=item['status']+(' (запрос есть в записи)' if item['query_captured'] else ' (запрос не найден в записи)')
+        dns_events.append((item['time'],item['name'],item['type'],item['server'],item['protocol'],status,item))
+    for item in meta.get('dns_unanswered',[]):
+        dns_events.append((item['time'],item['name'],item['type'],item['server'],item['protocol'],'Ответ не найден в записи',item))
+    page+='<h2>Сбои DNS в PCAP</h2><p>Показаны DNS-ответы с ошибочным кодом и запросы, для которых ответ не найден в захвате. Запрос без ответа в записи не доказывает блокировку: запись могла начаться позже или закончиться раньше ответа. DNS-запросы не привязываются к выбранному процессу. После захвата каждая уникальная ошибка перепроверяется у DNS-сервера из PCAP по UDP и TCP 53, а также через Google и Cloudflare DoH; ответы могут отличаться от состояния во время захвата. Имена запросов передаются обоим DoH-провайдерам; --offline отключает все перепроверки. «Доступен» означает, что сервер ответил; DNS-код показывает, разрешилось ли имя. Различие между DNS-сервером и DoH может быть признаком фильтрации, но не доказывает её.</p>'
+    if dns_events:
+        dns_events.sort(key=lambda item:item[0])
+        page+=table(['Время UTC','Имя запроса','Тип','DNS-сервер','Протокол','Результат в PCAP','DNS-сервер :53 (UDP / TCP)','Google DoH','Cloudflare DoH'],[
+            (datetime.datetime.fromtimestamp(t,datetime.timezone.utc).isoformat(timespec='milliseconds'),name,typ,server,proto,status,
+             'UDP: '+check_text(item,'dns53_udp')+'; TCP: '+check_text(item,'dns53_tcp'),
+             check_text(item,'google_doh'),check_text(item,'cloudflare_doh'))
+            for t,name,typ,server,proto,status,item in dns_events
+        ])
+    else:page+='<p>Ошибочных DNS-ответов и запросов без ответа в записи не найдено.</p>'
+    proxy_domains=collections.defaultdict(lambda:{'sources':set(),'processes':set(),'ips':set(),'statuses':set(),'flows':0,'candidates':0})
+    for r in rows:
+        if not r['Matched'] or not r['Domain']:continue
+        for domain in r['Domain'].split('; '):
+            item=proxy_domains[domain]
+            item['sources'].add(r['DomainSource'] or '—')
+            item['processes'].add(r['Process']+' / '+r['PID'])
+            item['ips'].add(r['IP'])
+            item['statuses'].add(r['Status'])
+            item['flows']+=1
+            item['candidates']+=int(r['Candidate'])
+    page+='<h2>Домены для ручной проверки маршрута через прокси</h2><p>Имена из потоков, сопоставленных выбранному процессу/приложению; список помогает проверить, какие домены добавить в правила прокси. Это не утверждение о блокировке: ответы TCP не подтверждают успешную работу сайта, а сетевые кандидаты не определяют нужный маршрут.</p>'
+    if proxy_domains:
+        page+=table(['Домен','Источник имени','Процесс / PID','Удалённые IP','Потоков','Сетевых кандидатов','Результат потоков'],[
+            (domain,'; '.join(sorted(item['sources'])),'; '.join(sorted(item['processes'])),
+             '; '.join(sorted(item['ips'],key=lambda value:tuple(int(part) for part in value.split('.')))),
+             item['flows'],item['candidates'],'; '.join(sorted(item['statuses'])))
+            for domain,item in sorted(proxy_domains.items())
+        ])
+    else:page+='<p>В сопоставленных потоках имена не найдены.</p>'
     if meta['mode']=='procmon':
         text='Сопоставляются протокол, оба IP и оба порта (5-tuple), а также время ± заданный допуск. Счётчики сопоставленных строк включают только пакеты в этих временных окнах. Это корреляция потока, не доказанная привязка каждого пакета к PID: Procmon и захват работают на разных уровнях. Если один tuple встречается у нескольких процессов/PID, строка неоднозначна и исключена из правил. PID мог повторно использоваться в длинной записи.'
     else:text='Сопоставление только по IP из истории приложения. NetLimiter не доказывает принадлежность отдельных пакетов: один IP может использоваться несколькими программами. Счётчики включают весь поток из захвата; время, PID и протокол CSV не используются. Экспортируйте историю за тот же сеанс. IP, встречающийся у нескольких приложений в CSV, исключён из правил как неоднозначный.'

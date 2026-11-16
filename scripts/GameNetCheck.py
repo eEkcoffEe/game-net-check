@@ -192,12 +192,12 @@ def main():
             import tkinter as tk
             from tkinter import filedialog,simpledialog,messagebox
             root=tk.Tk();root.withdraw()
-            picker=tk.Toplevel(root);picker.title('GameNetCheck 1.5');picker.geometry('510x215');picker.resizable(False,False)
-            tk.Label(picker,text='Выберите пару файлов для анализа',font=('Segoe UI',13)).pack(pady=18)
+            picker=tk.Toplevel(root);picker.title('GameNetCheck 1.5');picker.geometry('480x210');picker.resizable(False,False)
+            tk.Label(picker,text='Выберите режим работы',font=('Segoe UI',13)).pack(pady=16)
             choice=[]
             def choose(mode):choice.append(mode);picker.destroy()
-            tk.Button(picker,text='Process Monitor CSV + Wireshark',command=lambda:choose('procmon'),width=48,height=2).pack(pady=5)
-            tk.Button(picker,text='Wireshark + NetLimiter CSV',command=lambda:choose('netlimiter'),width=48,height=2).pack(pady=5)
+            tk.Button(picker,text='Process Monitor + Wireshark',command=lambda:choose('procmon'),width=48,height=2).pack(pady=4)
+            tk.Button(picker,text='NetLimiter + Wireshark',command=lambda:choose('netlimiter'),width=48,height=2).pack(pady=4)
             root.wait_window(picker)
             if not choice:return
             a.mode=choice[0]
